@@ -56,10 +56,10 @@ class SimpleAgent(Agent):
             ),
             llm=openai.LLM(model="gpt-4o-mini"),
             tts=cartesia.TTS(
-                model="sonic-english", # UWAGA: Upewnij się, że ten model Cartesia działa z polskim lub zmień na openai.TTS
+                model="sonic-2", # UWAGA: Upewnij się, że ten model Cartesia działa z polskim lub zmień na openai.TTS
                 voice="3d335974-4c4a-400a-84dc-ebf4b73aada6",
                 speed=0.9,
-                # emotion=["curiosity:medium", "positivity:high"] # Możesz to odkomentować, jeśli chcesz
+                emotion=["curiosity:medium", "positivity:high"] # Możesz to odkomentować, jeśli chcesz
             ),
             vad=silero.VAD.load()
         )
