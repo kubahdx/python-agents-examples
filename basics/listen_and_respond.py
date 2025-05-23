@@ -59,6 +59,7 @@ class SimpleAgent(Agent):
                 model="sonic-2", # UWAGA: Upewnij się, że ten model Cartesia działa z polskim lub zmień na openai.TTS
                 voice="3d335974-4c4a-400a-84dc-ebf4b73aada6",
                 speed=0.9,
+                language="pl"
                 emotion=["curiosity:medium", "positivity:high"] # Możesz to odkomentować, jeśli chcesz
             ),
             vad=silero.VAD.load()
