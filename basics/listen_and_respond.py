@@ -58,7 +58,7 @@ class SimpleAgent(Agent):
             tts=cartesia.TTS(
                 model="sonic-2-2025-05-08", 
                 voice="3d335974-4c4a-400a-84dc-ebf4b73aada6",
-                speed=0.9,
+                speed="slow",
                 language="pl",
                 emotion=["curiosity:high", "positivity:high", "surprise:high"] # Możesz to odkomentować, jeśli chcesz
             ),
