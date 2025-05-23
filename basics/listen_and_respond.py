@@ -35,7 +35,6 @@ Twoim celem jest sprawić, by użytkownik czuł się zrozumiany, bezpieczny i zm
                 interim_results=True,
                 smart_format=True,
                 punctuate=True,
-                filler_words=True
             ),
             llm=openai.LLM(model="gpt-4o-mini"),
             tts=cartesia.TTS(
