@@ -84,7 +84,6 @@ Szanuj granice – nie naciskaj, jeśli użytkownik nie chce mówić.
                 interim_results=True,
                 smart_format=True,
                 punctuate=True,
-                filter_words=True,
             ),
             llm=openai.LLM(model="gpt-4o-mini"),
             tts=cartesia.TTS(
