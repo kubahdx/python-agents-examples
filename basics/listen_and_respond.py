@@ -5,16 +5,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
+# Importy typów dla eventów, które mogą się przydać przy bardziej szczegółowym logowaniu,
+# ale na razie nie są krytyczne, jeśli nie używamy ich w handlerach.
+# from livekit.agents.voice import LLMInput, TTSInput, VADInput, STTInput 
 from livekit.plugins import openai, silero, deepgram, cartesia
+# from livekit import rtc # Był potrzebny dla typów w eventach
 
 # ----- Konfiguracja Logowania -----
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO, 
     format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s'
 )
-logging.getLogger("livekit.agents").setLevel(logging.DEBUG)
+logging.getLogger("livekit.agents").setLevel(logging.DEBUG) 
 logger = logging.getLogger("listen-and-respond")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG) 
 # ---------------------------------
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
@@ -23,8 +27,9 @@ logger.info("Załadowano zmienne środowiskowe z .env, jeśli plik istnieje.")
 # --- ID Głosów Cartesia dla języka polskiego ---
 # Upewnij się, że te ID są poprawne i przeznaczone dla języka polskiego
 # oraz dla modelu Cartesia, którego używasz (np. sonic-2-2025-05-08)
-MALE_VOICE_ID_CARTESIA = "4ef93bb3-682a-46e6-b881-8e157b6b4388"
-FEMALE_VOICE_ID_CARTESIA = "575a5d29-1fdc-4d4e-9afa-5a9a71759864"
+MALE_VOICE_ID_CARTESIA = "4ef93bb3-682a-46e6-b881-8e157b6b4388" # Twój ID głosu męskiego
+FEMALE_VOICE_ID_CARTESIA = "575a5d29-1fdc-4d4e-9afa-5a9a71759864" # Twój ID głosu żeńskiego
+CARTESIA_MODEL_PL = "sonic-2-2025-05-08" # Twój model Cartesia dla polskiego
 # -----------------------------------------
 
 # Instrukcje dla LLM - pozostają takie same dla obu płci
@@ -50,7 +55,7 @@ Twoim celem jest sprawić, by użytkownik czuł się zrozumiany, bezpieczny i zm
 """
 
 class SimpleAgent(Agent):
-    # Zmieniamy __init__, aby przyjmował tylko konfigurację TTS (instrukcje są stałe)
+    # Zmieniamy __init__, aby przyjmował konfigurację TTS
     def __init__(self, tts_config: dict) -> None:
         logger.debug(f"Inicjalizacja SimpleAgent z konfiguracją TTS: {tts_config}")
         super().__init__(
@@ -70,7 +75,10 @@ class SimpleAgent(Agent):
 
     async def on_enter(self):
         session_id_str = str(self.session.id) if self.session and hasattr(self.session, 'id') else "UnknownSession"
-        agent_id_str = str(self.session.agent.id) if self.session and hasattr(self.session, 'agent') and hasattr(self.session.agent, 'id') else "UnknownAgent"
+        # agent_id_str = str(self.session.agent.id) if self.session and hasattr(self.session, 'agent') and hasattr(self.session.agent, 'id') else "UnknownAgent"
+        # Poprawka dla agent_id, 'self' to agent
+        agent_id_str = str(self.id) if hasattr(self, 'id') else "UnknownAgent"
+
         logger.info(f"Agent {agent_id_str} on_enter wywołane dla sesji {session_id_str}")
         try:
             # Agent wygeneruje powitanie na podstawie AGENT_INSTRUCTIONS
@@ -95,27 +103,34 @@ async def entrypoint(ctx: JobContext):
                  personality_choice = job_personality
             logger.info(f"Job {job_id} - Wybrana osobowość z metadanych: {personality_choice}")
         except json.JSONDecodeError as e:
-            logger.error(f"Job {job_id} - Błąd parsowania metadanych JSON: {e}. Używam domyślnej osobowości: {personality_choice}")
+            logger.error(f"Job {job_id} - Błąd parsowania metadanych JSON z metadanych zadania: '{ctx.job.metadata}'. Błąd: {e}. Używam domyślnej osobowości: {personality_choice}")
+        except Exception as e:
+            logger.error(f"Job {job_id} - Inny błąd podczas przetwarzania metadanych zadania: {e}. Używam domyślnej osobowości: {personality_choice}")
     else:
         logger.info(f"Job {job_id} - Brak metadanych zadania. Używam domyślnej osobowości: {personality_choice}")
     # ---------------------------------------------------------
 
     # --- Dynamiczna konfiguracja TTS na podstawie osobowości ---
-    # Model Cartesia i inne parametry pozostają takie same, zmieniamy tylko 'voice' ID
-    # Upewnij się, że 'model' Cartesia jest poprawny dla języka polskiego i dla obu głosów
     selected_voice_id = FEMALE_VOICE_ID_CARTESIA
+    # Możesz też zdefiniować różne emocje/prędkość dla różnych głosów
+    female_tts_emotion = ["curiosity:low", "positivity:high"] 
+    male_tts_emotion = ["neutral"] # Przykład: bardziej neutralne emocje dla męskiego głosu
+
+    selected_emotion = female_tts_emotion
+
     if personality_choice == "male":
         selected_voice_id = MALE_VOICE_ID_CARTESIA
+        selected_emotion = male_tts_emotion
         logger.info(f"Job {job_id} - Konfiguruję agenta jako MĘŻCZYZNA (głos: {selected_voice_id}).")
     else:
         logger.info(f"Job {job_id} - Konfiguruję agenta jako KOBIETA (głos: {selected_voice_id}).")
 
     tts_configuration = {
-        "model": "sonic-2-2025-05-08", # Ten sam model dla obu głosów
+        "model": CARTESIA_MODEL_PL,    # Używamy zdefiniowanego modelu dla PL
         "voice": selected_voice_id,    # Dynamicznie wybrany ID głosu
-        "speed": 0.9,
-        "language": "pl",              # Dodajemy jawnie język polski dla Cartesia
-        "emotion": ["curiosity:low", "positivity:high"] # Domyślne emocje, można je też różnicować
+        "speed": 0.9,                  # Możesz to też różnicować
+        "language": "pl",              # Jawnie ustawiamy język polski
+        "emotion": selected_emotion    # Dynamicznie wybrane emocje
     }
     # ------------------------------------------------------
     
@@ -126,11 +141,25 @@ async def entrypoint(ctx: JobContext):
         logger.error(f"Job {job_id} - Błąd podczas ctx.connect(): {e}", exc_info=True)
         return
 
-    session = AgentSession()
+    session = AgentSession() # Tworzymy sesję dla tego konkretnego zadania (joba)
     logger.debug(f"Job {job_id} - Obiekt AgentSession stworzony: {session}")
 
-    # Tu możesz dodać handlery zdarzeń z poprzedniej wersji kodu, jeśli chcesz mieć bardzo szczegółowe logi
-    # np. @session.on("llm_response_ended") async def on_llm_response_ended(summary: str): ... itd.
+    # Dodajemy bardziej szczegółowe logowanie eventów, jeśli chcesz, na razie zostawiam podstawowe.
+    # Poniżej przykład, jak można by to zrobić (odkomentuj i dostosuj, jeśli potrzebujesz)
+    """
+    @session.on("llm_response_ended")
+    async def on_llm_response_ended(summary: str):
+        logger.info(f"Job {job_id} - Event: LLM Response Ended. Pełna odpowiedź LLM: '{summary}'")
+
+    @session.on("tts_input_prepared")
+    async def on_tts_input_prepared(data): # Użyj 'data: TTSInput', jeśli rozwiążesz problem z importem
+        text_to_speak = data.text if hasattr(data, 'text') else "Brak tekstu w TTSInput"
+        logger.info(f"Job {job_id} - Event: TTS Input Prepared. Tekst dla TTS: '{text_to_speak}'")
+
+    @session.on("agent_speech_started")
+    async def on_agent_speech_started():
+        logger.info(f"Job {job_id} - Event: Agent Speech Started (agent zaczął mówić)")
+    """
 
     try:
         logger.info(f"Job {job_id} - Rozpoczynanie AgentSession z dynamicznie skonfigurowanym SimpleAgent...")
@@ -150,5 +179,5 @@ if __name__ == "__main__":
     logger.info("Uruchamianie aplikacji CLI dla workera agenta (psycholog-agent)...")
     cli.run_app(WorkerOptions(
         entrypoint_fnc=entrypoint,
-        agent_name="psycholog-agent" # Ustawiamy nazwę agenta, aby odpowiadała tej z dispatch na Vercelu
+        agent_name="psycholog-agent" # Nazwa workera, aby pasowała do dispatch z Vercel
     ))
