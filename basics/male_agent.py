@@ -133,4 +133,7 @@ async def entrypoint(ctx: JobContext):
 
 if __name__ == "__main__":
     logger.info("Uruchamianie aplikacji CLI dla workera agenta (głos męski)...")
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        agent_name="agent_male_nazwa"  # Twoja unikalna nazwa dla agenta męskiego
+    ))

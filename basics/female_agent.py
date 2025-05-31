@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
-from livekit.agents.voice import Agent, AgentSession
+from livekit.agents.voice import Agent, AgentSession # Upewnij się, że Agent i AgentSession są importowane
 from livekit.plugins import openai, silero, deepgram, cartesia
 
 # ----- Konfiguracja Logowania na Początku Pliku -----
@@ -12,7 +12,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s'
 )
 logging.getLogger("livekit.agents").setLevel(logging.DEBUG)
-logger = logging.getLogger("female-voice-agent") # Zmieniono nazwę loggera
+logger = logging.getLogger("female-voice-agent") # Nazwa loggera dla agenta żeńskiego
 logger.setLevel(logging.DEBUG)
 # ----------------------------------------------------
 
@@ -84,8 +84,8 @@ Szanuj granice – nie naciskaj, jeśli użytkownik nie chce mówić.
             llm=openai.LLM(model="gpt-4o-mini"),
             tts=cartesia.TTS(
                 model="sonic-2-2025-05-08",
-                voice="575a5d29-1fdc-4d4e-9afa-5a9a71759864", # <--- ZMIANA NA GŁOS ŻEŃSKI
-                speed="slow", # Możesz dostosować prędkość dla głosu żeńskiego
+                voice="575a5d29-1fdc-4d4e-9afa-5a9a71759864", # <--- GŁOS ŻEŃSKI
+                speed="slow",
                 language="pl",
                 emotion=["curiosity:low", "positivity:high", "surprise:high"]
             ),
@@ -98,10 +98,14 @@ Szanuj granice – nie naciskaj, jeśli użytkownik nie chce mówić.
         agent_id_str = str(self.session.agent.id) if self.session and hasattr(self.session, 'agent') and hasattr(self.session.agent, 'id') else "UnknownAgent"
         logger.info(f"Agent żeński {agent_id_str} on_enter wywołane dla sesji {session_id_str}")
         try:
-            self.session.generate_reply()
-            logger.info(f"Agent żeński {agent_id_str} wywołał generate_reply() w on_enter dla sesji {session_id_str}")
+            # Zamiast generate_reply() od razu, zaczekaj na interakcję użytkownika lub wyślij powitanie.
+            # Możesz użyć self.session.say() do wysłania wiadomości powitalnej.
+            # self.session.generate_reply() # Możesz to wywołać później, np. po pierwszej wiadomości od użytkownika.
+            # Dla przykładu, wyślijmy powitanie:
+            await self.session.say("Cześć! Jestem Twoją wirtualną kumpelą. Jak mogę Ci dzisiaj pomóc?", allow_interruptions=True)
+            logger.info(f"Agent żeński {agent_id_str} wysłał powitanie w on_enter dla sesji {session_id_str}")
         except Exception as e:
-            logger.error(f"Agent żeński {agent_id_str} - Błąd w on_enter podczas generate_reply(): {e}", exc_info=True)
+            logger.error(f"Agent żeński {agent_id_str} - Błąd w on_enter: {e}", exc_info=True)
 
 
 async def entrypoint(ctx: JobContext):
@@ -117,11 +121,11 @@ async def entrypoint(ctx: JobContext):
         return
 
     try:
-        session = AgentSession()
+        session = AgentSession() # Tworzenie sesji agenta
         logger.debug(f"Job {job_id} (agent żeński) - Obiekt AgentSession stworzony: {session}")
         logger.info(f"Job {job_id} (agent żeński) - Rozpoczynanie AgentSession z SimpleAgent (głos żeński)...")
         await session.start(
-            agent=SimpleAgent(),
+            agent=SimpleAgent(), # Przekazanie instancji agenta
             room=ctx.room
         )
         logger.info(f"Job {job_id} (agent żeński) - AgentSession wystartowała pomyślnie dla pokoju {room_name_str}")
@@ -133,4 +137,7 @@ async def entrypoint(ctx: JobContext):
 
 if __name__ == "__main__":
     logger.info("Uruchamianie aplikacji CLI dla workera agenta (głos żeński)...")
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        agent_name="agent_female_nazwa"  # Twoja unikalna nazwa dla agenta żeńskiego
+    ))
