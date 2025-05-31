@@ -1,56 +1,49 @@
 import logging
 import os
-import json # Dodano do potencjalnego odczytu metadanych
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai, silero, deepgram, cartesia
 
-# ----- Konfiguracja Logowania na Początku Pliku -----
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s'
 )
 logging.getLogger("livekit.agents").setLevel(logging.DEBUG)
-logger = logging.getLogger("voice-assistant-agent") # Zmieniono nazwę loggera dla jasności
+logger = logging.getLogger("voice-assistant-agent")
 logger.setLevel(logging.DEBUG)
-# ----------------------------------------------------
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 logger.info("Załadowano zmienne środowiskowe z .env, jeśli plik istnieje.")
 
-# --- Konfiguracje Głosów TTS Cartesia ---
-# WAŻNE: Uzupełnij 'YOUR_MALE_VOICE_ID' i ewentualnie 'YOUR_MALE_MODEL_ID'
-# rzeczywistymi wartościami od Cartesia dla głosu męskiego.
-# Parametry 'speed', 'language', 'emotion' mogą być takie same lub różne.
 CARTESIA_TTS_CONFIGS = {
-    "female": { # Używamy Twoich dotychczasowych ustawień jako żeńskich
+    "female": {
         "model": "sonic-2-2025-05-08",
-        "voice_id": "575a5d29-1fdc-4d4e-9afa-5a9a71759864", # Upewnij się, że to ID głosu żeńskiego
+        "voice": "575a5d29-1fdc-4d4e-9afa-5a9a71759864", # Zmieniono klucz z voice_id na voice
         "speed": "slow",
         "language": "pl",
         "emotion": ["curiosity:low", "positivity:high", "surprise:high"]
     },
     "male": {
-        "model": "sonic-2-2025-05-08", # Użyj odpowiedniego modelu dla głosu męskiego, jeśli inny
-        "voice": "4ef93bb3-682a-46e6-b881-8e157b6b4388", # <<< WAŻNE: ZASTĄP TO ID GŁOSU MĘSKIEGO
+        "model": "sonic-2-2025-05-08",
+        "voice": "4ef93bb3-682a-46e6-b881-8e157b6b4388", # Zmieniono klucz z voice_id na voice
         "speed": "slow",
         "language": "pl",
-        "emotion": ["curiosity:low", "positivity:high", "surprise:high"] # Dostosuj emocje, jeśli potrzeba
+        "emotion": ["curiosity:low", "positivity:high", "surprise:high"]
     },
-    "default": { # Konfiguracja domyślna, jeśli nie uda się określić głosu
+    "default": {
         "model": "sonic-2-2025-05-08",
-        "voice": "3d335974-4c4a-400a-84dc-ebf4b73aada6", # Domyślnie np. żeński
+        "voice": "3d335974-4c4a-400a-84dc-ebf4b73aada6", # Zmieniono klucz z voice_id na voice
         "speed": "slow",
         "language": "pl",
         "emotion": ["curiosity:low", "positivity:high", "surprise:high"]
     }
 }
-# -----------------------------------------
 
 class SimpleAgent(Agent):
-    def __init__(self, tts_plugin: cartesia.TTS) -> None: # Zmieniono: przyjmuje tts_plugin
+    def __init__(self, tts_plugin: cartesia.TTS) -> None:
         logger.debug("Inicjalizacja SimpleAgent...")
         super().__init__(
             instructions=r"""
@@ -112,18 +105,16 @@ Szanuj granice – nie naciskaj, jeśli użytkownik nie chce mówić.
                 punctuate=True,
             ),
             llm=openai.LLM(model="gpt-4o-mini"),
-            tts=tts_plugin, # Zmieniono: używa przekazanego pluginu
+            tts=tts_plugin,
             vad=silero.VAD.load()
         )
-        logger.info(f"SimpleAgent zainicjalizowany pomyślnie z modelem TTS: {tts_plugin.model} i głosem: {tts_plugin.voice}") # Zaktualizowano log
+        logger.info(f"SimpleAgent zainicjalizowany pomyślnie z modelem TTS: {tts_plugin.model} i głosem: {tts_plugin.voice}")
 
     async def on_enter(self):
         session_id_str = str(self.session.id) if self.session and hasattr(self.session, 'id') else "UnknownSession"
         agent_id_str = str(self.session.agent.id) if self.session and hasattr(self.session, 'agent') and hasattr(self.session.agent, 'id') else "UnknownAgent"
         logger.info(f"Agent {agent_id_str} on_enter wywołane dla sesji {session_id_str}")
         try:
-            # Generowanie odpowiedzi na wejściu, używając instrukcji systemowych (promptu agenta)
-            # To spowoduje, że agent przywita się zgodnie z "Jak Zaczynać" w instrukcjach.
             await self.session.generate_reply()
             logger.info(f"Agent {agent_id_str} wywołał generate_reply() w on_enter dla sesji {session_id_str}")
         except Exception as e:
@@ -135,10 +126,8 @@ async def entrypoint(ctx: JobContext):
     room_name_str = str(ctx.room.name) if ctx.room and hasattr(ctx.room, 'name') else "UnknownRoom"
     logger.info(f"Job {job_id} otrzymany, próba połączenia z pokojem: {room_name_str}")
 
-    # --- Ustalanie konfiguracji głosu TTS ---
-    selected_voice_key = "default" # Domyślna wartość
+    selected_voice_key = "default"
     
-    # 1. Sprawdź nazwę pokoju
     if room_name_str == "voice-assistant-room-male":
         selected_voice_key = "male"
         logger.info(f"Job {job_id}: Wykryto pokój dla głosu męskiego ({room_name_str}).")
@@ -147,12 +136,10 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Job {job_id}: Wykryto pokój dla głosu żeńskiego ({room_name_str}).")
     else:
         logger.warning(f"Job {job_id}: Nieznana nazwa pokoju ({room_name_str}). Próba odczytu metadanych zadania.")
-        # 2. (Opcjonalnie) Sprawdź metadane zadania, jeśli nazwa pokoju nie jest decydująca
-        # To jest bardziej elastyczne, jeśli chcesz przekazywać 'voice' w inny sposób niż przez nazwę pokoju.
         if ctx.job.metadata:
             try:
                 metadata = json.loads(ctx.job.metadata)
-                job_voice_preference = metadata.get("voice") # Zakładamy, że frontend wysyła 'voice': 'male'/'female'
+                job_voice_preference = metadata.get("voice")
                 if job_voice_preference in CARTESIA_TTS_CONFIGS:
                     selected_voice_key = job_voice_preference
                     logger.info(f"Job {job_id}: Odczytano preferencję głosu '{selected_voice_key}' z metadanych zadania.")
@@ -163,14 +150,15 @@ async def entrypoint(ctx: JobContext):
         else:
             logger.info(f"Job {job_id}: Brak metadanych zadania. Użycie domyślnego głosu '{selected_voice_key}'.")
 
-    tts_config = CARTESIA_TTS_CONFIGS[selected_voice_key]
-    logger.info(f"Job {job_id}: Wybrana konfiguracja TTS ({selected_voice_key}): Model={tts_config['model']}, VoiceID={tts_config['voice_id']}")
+    # Używamy .get() z wartością domyślną, aby uniknąć KeyError jeśli selected_voice_key byłby niepoprawny
+    # Chociaż logika powyżej powinna zapewnić, że selected_voice_key jest zawsze poprawny ('male', 'female', 'default')
+    tts_config = CARTESIA_TTS_CONFIGS.get(selected_voice_key, CARTESIA_TTS_CONFIGS["default"])
+    logger.info(f"Job {job_id}: Wybrana konfiguracja TTS ({selected_voice_key}): Model={tts_config['model']}, VoiceID={tts_config['voice']}") # Poprawiono na tts_config['voice']
 
-    # Utworzenie instancji pluginu TTS z wybraną konfiguracją
     try:
         tts_plugin = cartesia.TTS(
             model=tts_config["model"],
-            voice=tts_config["voice_id"], # Zmieniono z 'voice' na 'voice_id', aby pasowało do Cartesia i naszego configu
+            voice=tts_config["voice"], # Używamy klucza 'voice' zgodnie z definicją w słowniku
             speed=tts_config["speed"],
             language=tts_config["language"],
             # emotion=tts_config["emotion"] # Odkomentuj, jeśli chcesz używać emocji
@@ -179,9 +167,7 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.error(f"Job {job_id}: Nie udało się utworzyć pluginu Cartesia TTS dla głosu '{selected_voice_key}': {e}", exc_info=True)
         logger.error(f"Job {job_id}: Sprawdź, czy masz poprawny CARTESIA_API_KEY w zmiennych środowiskowych.")
-        # Jeśli nie można utworzyć TTS, nie ma sensu kontynuować
         return
-    # -----------------------------------------
 
     try:
         await ctx.connect()
@@ -194,7 +180,7 @@ async def entrypoint(ctx: JobContext):
         session = AgentSession()
         logger.debug(f"Job {job_id} - Obiekt AgentSession stworzony: {session}")
 
-        agent_instance = SimpleAgent(tts_plugin=tts_plugin) # Przekazanie skonfigurowanego TTS
+        agent_instance = SimpleAgent(tts_plugin=tts_plugin)
 
         logger.info(f"Job {job_id} - Rozpoczynanie AgentSession z SimpleAgent (głos: {selected_voice_key})...")
         await session.start(
@@ -212,4 +198,3 @@ async def entrypoint(ctx: JobContext):
 if __name__ == "__main__":
     logger.info("Uruchamianie aplikacji CLI dla workera agenta...")
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
-
