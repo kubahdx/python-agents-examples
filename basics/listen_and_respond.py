@@ -1,200 +1,222 @@
-import logging
 import os
 import json
-from pathlib import Path
+import logging
 from dotenv import load_dotenv
-from livekit.agents import JobContext, WorkerOptions, cli
-from livekit.agents.voice import Agent, AgentSession
-from livekit.plugins import openai, silero, deepgram, cartesia
+from typing import List, Dict, Optional
+import asyncio
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s'
+from livekit.agents import (
+    JobContext,
+    JobType,
+    WorkerOptions,
+    cli,
+    Agent,
+    AgentSession,
 )
-logging.getLogger("livekit.agents").setLevel(logging.DEBUG)
-logger = logging.getLogger("voice-assistant-agent")
-logger.setLevel(logging.DEBUG)
+from livekit.plugins import cartesia, deepgram, openai, silero # Zaimportuj potrzebne pluginy
 
-load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
+# Ustawienie loggera
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("voice-assistant-agent")
+
+# Ładowanie zmiennych środowiskowych
+load_dotenv()
 logger.info("Załadowano zmienne środowiskowe z .env, jeśli plik istnieje.")
 
+CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY")
+if not CARTESIA_API_KEY:
+    logger.warning("CARTESIA_API_KEY nie jest ustawiony w zmiennych środowiskowych. Plugin Cartesia TTS może nie działać poprawnie.")
+
+# Poprawione klucze: 'model' zamiast 'model_id' i 'voice' zamiast 'voice_id'
 CARTESIA_TTS_CONFIGS = {
-    "female": {
-        "model": "sonic-2-2025-05-08",
-        "voice": "575a5d29-1fdc-4d4e-9afa-5a9a71759864", # Zmieniono klucz z voice_id na voice
-        "speed": "slow",
-        "language": "pl",
-        "emotion": ["curiosity:low", "positivity:high", "surprise:high"]
-    },
     "male": {
-        "model": "sonic-2-2025-05-08",
-        "voice": "4ef93bb3-682a-46e6-b881-8e157b6b4388", # Zmieniono klucz z voice_id na voice
-        "speed": "slow",
-        "language": "pl",
-        "emotion": ["curiosity:low", "positivity:high", "surprise:high"]
+        "model": "sonic-2-2025-05-08",  # Upewnij się, że to poprawny model Cartesia
+        "voice": "YOUR_MALE_VOICE_ID_HERE",  # WAŻNE: ZASTĄP TO ID GŁOSU MĘSKIEGO
+        "speed": 0.9,
+        "language": "pl", # Ustaw odpowiedni język, jeśli model go wspiera
+        "emotion": ["positivity:medium"]
+    },
+    "female": {
+        "model": "sonic-2-2025-05-08",  # Upewnij się, że to poprawny model Cartesia
+        "voice": "YOUR_FEMALE_VOICE_ID_HERE",  # WAŻNE: ZASTĄP TO ID GŁOSU ŻEŃSKIEGO
+        "speed": 1.0,
+        "language": "pl", # Ustaw odpowiedni język, jeśli model go wspiera
+        "emotion": ["neutral"]
     },
     "default": {
-        "model": "sonic-2-2025-05-08",
-        "voice": "3d335974-4c4a-400a-84dc-ebf4b73aada6", # Zmieniono klucz z voice_id na voice
-        "speed": "slow",
-        "language": "pl",
-        "emotion": ["curiosity:low", "positivity:high", "surprise:high"]
+        "model": "sonic-2-2025-05-08",   # Upewnij się, że to poprawny model Cartesia
+        "voice": "3d335974-4c4a-400a-84dc-ebf4b73aada6", # Przykładowe ID głosu Cartesia, może wymagać zmiany
+        "speed": 1.0,
+        "language": "pl", # Ustaw odpowiedni język, jeśli model go wspiera
+        "emotion": ["neutral"]
     }
 }
 
 class SimpleAgent(Agent):
-    def __init__(self, tts_plugin: cartesia.TTS) -> None:
-        logger.debug("Inicjalizacja SimpleAgent...")
-        super().__init__(
-            instructions=r"""
-                Jesteś głosowym asystentem AI, który działa jak wspierający kumpel z zacięciem terapeutycznym, pomagający młodym ludziom (15-30 lat) ogarnąć emocje, problemy społeczne czy życiowe. Rozmawiasz tak, jakbyś siedział/a z kimś na kawie – prosto, naturalnie, bez sztywnych formułek. Używasz codziennego języka, czasem z lekkim slangiem, ale tylko takim, który brzmi autentycznie dla młodych (np. „okej”, „spoko”). Inspirujesz się technikami CBT, ACT i mindfulness, tłumacząc je w prosty sposób, jak dla znajomego. Budujesz zaufanie przez ciepły, empatyczny ton i szybkie przejście do praktycznych rad. Nie zasypujesz pytaniami – słuchasz, odnosisz się do emocji i dajesz tipy, które można od razu zastosować.
-Kluczowe Zasady
+    def __init__(self, tts_plugin: cartesia.TTS, llm_plugin: openai.LLM, stt_plugin: deepgram.STT):
+        super().__init__()
+        self.tts_plugin = tts_plugin
+        self.llm_plugin = llm_plugin # Dodajemy LLM i STT do agenta
+        self.stt_plugin = stt_plugin
+        self.chat_history: List[Dict[str, str]] = [
+            {"role": "system", "content": "Jesteś pomocnym asystentem głosowym mówiącym po polsku. Odpowiadaj zwięźle."}
+        ]
+        self.agent_session: Optional[AgentSession] = None
 
-Ton: Ciepły, luźny, jak kumpel, który chce pomóc. Zero klinicznego języka czy naciąganych tekstów.
-Budowanie zaufania: Reagujesz na emocje od razu, np. „Kurczę, to brzmi ciężko. Jak to przeżywasz?” zamiast wielu pytań.
-Praktyczne podejście: Dajesz proste, konkretne rady, np. „Jak czujesz, że Cię przytłacza, weź trzy głębokie oddechy i pomyśl o czymś małym, co możesz teraz zrobić.”
-Etyka: Jesteś wsparciem, ale nie terapeutą. Przy poważnych tematach (np. myśli samobójcze) mówisz: „To brzmi bardzo poważnie. Może pogadaj z kimś bliskim albo zadzwoń na [infolinia kryzysowa]?”
-Język: Codzienny, prosty polski, z poprawną odmianą imion (np. „Aniu”, „Kubo”). Bez imienia? Używasz „Hej, co słychać?”.
+        # Dostęp do atrybutów .model i .voice obiektu tts_plugin
+        # Te atrybuty są ustawiane przez plugin Cartesia na podstawie argumentów konstruktora.
+        # Używamy getattr dla bezpieczeństwa, na wypadek gdyby atrybuty nie zostały ustawione.
+        tts_model_info = getattr(self.tts_plugin, 'model', 'N/A')
+        tts_voice_info = getattr(self.tts_plugin, 'voice', 'N/A') # To jest ID głosu lub embedding
+        logger.info(f"SimpleAgent zainicjalizowany pomyślnie z modelem TTS: {tts_model_info} i głosem (ID/Embedding): {tts_voice_info}")
 
-Jak Zaczynać
-Zacznij od swobodnego powitania: „Hej! Jestem tu, żeby pogadać o tym, co Cię gryzie. Jak masz na imię?” Po imieniu zwracaj się naturalnie, np. „Cześć, Kuba! Co u Ciebie?” Jeśli imienia brak, idź w: „Hej, co się dzieje?”
-Przebieg Rozmowy
+    async def _main_processing_loop(self):
+        """Główna pętla przetwarzania agenta po nawiązaniu połączenia."""
+        if not self.agent_session:
+            logger.error("Sesja agenta niedostępna w głównej pętli.")
+            return
 
-Start i zaufanie:
-
-Reaguj na emocje, np.: „Słychać, że coś Cię męczy. Chcesz opowiedzieć, co się dzieje?”
-Pokazuj, że słuchasz: „Okej, to brzmi jak spora sprawa. Jak się z tym czujesz?”
-
-
-Ton i dopasowanie:
-
-Lżejsze tematy: Utrzymuj swobodę, np. „To brzmi, jakby życie rzuciło Ci niezłą zagwozdkę. Jak to teraz wygląda?”
-Poważne tematy: Empatyczny, ale nie sztywny ton, np. „Kurczę, to musiało Cię mocno przytłoczyć. Jak sobie z tym radzisz?”
-
-
-Konkretne rady:
-
-Proste tipy od razu, np.:
-
-Oddech: „Jak czujesz, że głowa się gotuje, weź trzy głębokie oddechy – wdech, wydech, to działa jak reset.”
-CBT: „Czasem mózg podsuwa czarne scenariusze. Spróbuj pomyśleć: ‘Czy to na pewno prawda, czy tylko mi się wydaje?’”
-Mindfulness: „Spróbuj na chwilę się zatrzymać i posłuchać, co się dzieje wokół. To jak wcisnąć pauzę.”
-
-
-Max 1-2 pytania na turę, np. „Co myślisz, żeby spróbować tego?”
-
-
-Zakończenie:
-
-Krótko podsumuj: „<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>I</mi><mi>m</mi><mi>i</mi><mtext>ę</mtext></mrow><annotation encoding="application/x-tex">Imię</annotation></semantics></math>, szacun, że się podzieliłeś/aś. Spróbuj tego, o czym mówiliśmy, i daj znać, jak poszło, okej?”
-Zachęcaj do powrotu: „Jakby co, jestem tu, pogadamy.”
-
-
-
-Etyka i Bezpieczeństwo
-
-Mów, że nie jesteś terapeutą: „Jestem tu, żeby pomóc, ale jak coś jest bardzo poważne, warto pogadać z kimś, kto się na tym zna.”
-Przy wzmiankach o samookaleczeniu/myślach samobójczych: „<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>I</mi><mi>m</mi><mi>i</mi><mtext>ę</mtext></mrow><annotation encoding="application/x-tex">Imię</annotation></semantics></math>, to brzmi naprawdę poważnie. Proszę, pogadaj z kimś zaufanym albo zadzwoń na [np. 116 123]. Jestem z Tobą, ale potrzebujesz wsparcia na żywo.”
-Szanuj granice – nie naciskaj, jeśli użytkownik nie chce mówić.
-            """,
-            stt=deepgram.STT(
-                model="nova-2-general",
-                language="pl",
-                interim_results=True,
-                smart_format=True,
-                punctuate=True,
-            ),
-            llm=openai.LLM(model="gpt-4o-mini"),
-            tts=tts_plugin,
-            vad=silero.VAD.load()
-        )
-        logger.info(f"SimpleAgent zainicjalizowany pomyślnie z modelem TTS: {tts_plugin.model} i głosem: {tts_plugin.voice}")
-
-    async def on_enter(self):
-        session_id_str = str(self.session.id) if self.session and hasattr(self.session, 'id') else "UnknownSession"
-        agent_id_str = str(self.session.agent.id) if self.session and hasattr(self.session, 'agent') and hasattr(self.session.agent, 'id') else "UnknownAgent"
-        logger.info(f"Agent {agent_id_str} on_enter wywołane dla sesji {session_id_str}")
+        # Przywitanie użytkownika po dołączeniu
         try:
-            await self.session.generate_reply()
-            logger.info(f"Agent {agent_id_str} wywołał generate_reply() w on_enter dla sesji {session_id_str}")
+            logger.info("Agent próbuje przywitać użytkownika.")
+            # Używamy historii czatu, aby LLM mógł wygenerować odpowiednie powitanie
+            # Można też przekazać bezpośredni tekst do `say`
+            await self.agent_session.say("Cześć! Jestem Twoim asystentem. Jak mogę pomóc?", allow_interruptions=True)
+            logger.info("Wysłano powitanie.")
         except Exception as e:
-            logger.error(f"Agent {agent_id_str} - Błąd w on_enter podczas generate_reply(): {e}", exc_info=True)
+            logger.error(f"Błąd podczas wysyłania powitania: {e}")
+
+        # AgentSession zajmie się główną pętlą STT->LLM->TTS.
+        # Ta pętla może służyć do dodatkowej logiki lub monitorowania.
+        while True:
+            await asyncio.sleep(1) # Utrzymuj pętlę przy życiu
+            if self.agent_session.is_closed: # Sprawdź czy sesja jest zamknięta
+                logger.info("Sesja agenta została zamknięta. Zakończenie głównej pętli.")
+                break
+
+
+    async def start(self, session: AgentSession): # Ta metoda jest wywoływana przez AgentSession
+        self.agent_session = session
+        logger.info(f"SimpleAgent wszedł do sesji dla pokoju: {session.room.name}")
+        # Uruchom główną pętlę przetwarzania jako zadanie w tle
+        asyncio.create_task(self._main_processing_loop())
 
 
 async def entrypoint(ctx: JobContext):
-    job_id = str(ctx.job.id) if hasattr(ctx.job, 'id') else "UnknownJob"
-    room_name_str = str(ctx.room.name) if ctx.room and hasattr(ctx.room, 'name') else "UnknownRoom"
-    logger.info(f"Job {job_id} otrzymany, próba połączenia z pokojem: {room_name_str}")
+    job_id = ctx.job_id
+    logger.info(f"Job {job_id} otrzymany, próba połączenia z pokojem: {ctx.room.name}")
 
-    selected_voice_key = "default"
-    
-    if room_name_str == "voice-assistant-room-male":
-        selected_voice_key = "male"
-        logger.info(f"Job {job_id}: Wykryto pokój dla głosu męskiego ({room_name_str}).")
-    elif room_name_str == "voice-assistant-room-female":
-        selected_voice_key = "female"
-        logger.info(f"Job {job_id}: Wykryto pokój dla głosu żeńskiego ({room_name_str}).")
+    tts_config_choice = "default"
+    room_name = ctx.room.name
+
+    if room_name == "voice-assistant-room-male":
+        tts_config_choice = "male"
+    elif room_name == "voice-assistant-room-female":
+        tts_config_choice = "female"
     else:
-        logger.warning(f"Job {job_id}: Nieznana nazwa pokoju ({room_name_str}). Próba odczytu metadanych zadania.")
+        logger.warning(f"Job {job_id}: Nieznana nazwa pokoju ({room_name}). Próba odczytu metadanych zadania.")
         if ctx.job.metadata:
             try:
                 metadata = json.loads(ctx.job.metadata)
-                job_voice_preference = metadata.get("voice")
-                if job_voice_preference in CARTESIA_TTS_CONFIGS:
-                    selected_voice_key = job_voice_preference
-                    logger.info(f"Job {job_id}: Odczytano preferencję głosu '{selected_voice_key}' z metadanych zadania.")
-                elif job_voice_preference:
-                    logger.warning(f"Job {job_id}: Nieznana wartość głosu '{job_voice_preference}' w metadanych. Użycie domyślnego.")
+                voice_preference = metadata.get("voice")
+                if voice_preference in CARTESIA_TTS_CONFIGS:
+                    tts_config_choice = voice_preference
+                    logger.info(f"Job {job_id}: Użycie głosu '{tts_config_choice}' z metadanych zadania.")
+                else:
+                    logger.warning(f"Job {job_id}: Nieznana wartość głosu ('{voice_preference}') w metadanych. Użycie domyślnego głosu.")
             except json.JSONDecodeError:
-                logger.warning(f"Job {job_id}: Błąd dekodowania JSON z metadanych zadania: {ctx.job.metadata}")
+                logger.error(f"Job {job_id}: Błąd parsowania metadanych JSON. Użycie domyślnego głosu.")
         else:
-            logger.info(f"Job {job_id}: Brak metadanych zadania. Użycie domyślnego głosu '{selected_voice_key}'.")
+            logger.info(f"Job {job_id}: Brak metadanych zadania. Użycie domyślnego głosu '{tts_config_choice}'.")
 
-    # Używamy .get() z wartością domyślną, aby uniknąć KeyError jeśli selected_voice_key byłby niepoprawny
-    # Chociaż logika powyżej powinna zapewnić, że selected_voice_key jest zawsze poprawny ('male', 'female', 'default')
-    tts_config = CARTESIA_TTS_CONFIGS.get(selected_voice_key, CARTESIA_TTS_CONFIGS["default"])
-    logger.info(f"Job {job_id}: Wybrana konfiguracja TTS ({selected_voice_key}): Model={tts_config['model']}, VoiceID={tts_config['voice']}") # Poprawiono na tts_config['voice']
+    selected_tts_config = CARTESIA_TTS_CONFIGS[tts_config_choice].copy() # Użyj kopii, aby uniknąć modyfikacji oryginału
+
+    # Sprawdzenie API Key PRZED próbą utworzenia pluginu
+    if not CARTESIA_API_KEY:
+        logger.error(f"Job {job_id}: Klucz CARTESIA_API_KEY nie jest ustawiony. Nie można utworzyć pluginu Cartesia TTS.")
+        return
+
+    # Sprawdzenie placeholderów w wybranej konfiguracji głosu
+    current_voice_id = selected_tts_config.get("voice", "")
+    if "YOUR_MALE_VOICE_ID_HERE" in current_voice_id or \
+       "YOUR_FEMALE_VOICE_ID_HERE" in current_voice_id:
+        logger.error(f"Job {job_id}: Placeholder Voice ID ('{current_voice_id}') znaleziony dla konfiguracji '{tts_config_choice}'. "
+                       "Proszę zastąpić go rzeczywistym ID głosu w słowniku CARTESIA_TTS_CONFIGS.")
+        # Spróbuj użyć domyślnego, jeśli wybrany miał placeholder
+        default_voice_id = CARTESIA_TTS_CONFIGS["default"].get("voice", "")
+        if "YOUR_" not in default_voice_id:
+            logger.warning(f"Job {job_id}: Przełączanie na domyślną konfigurację głosu z powodu placeholdera w '{tts_config_choice}'.")
+            selected_tts_config = CARTESIA_TTS_CONFIGS["default"].copy()
+            tts_config_choice = "default"
+        else:
+            logger.error(f"Job {job_id}: Domyślna konfiguracja głosu ('{default_voice_id}') również zawiera placeholder. "
+                           "Nie można kontynuować. Proszę ustawić poprawne ID głosów.")
+            return
+
+    # Logowanie wybranej konfiguracji (po ewentualnym fallbacku)
+    logger.info(f"Job {job_id}: Wybrana konfiguracja TTS ({tts_config_choice}): Model={selected_tts_config.get('model')}, VoiceID={selected_tts_config.get('voice')}")
 
     try:
-        tts_plugin = cartesia.TTS(
-            model=tts_config["model"],
-            voice=tts_config["voice"], # Używamy klucza 'voice' zgodnie z definicją w słowniku
-            speed=tts_config["speed"],
-            language=tts_config["language"],
-            # emotion=tts_config["emotion"] # Odkomentuj, jeśli chcesz używać emocji
-        )
-        logger.debug(f"Job {job_id}: Plugin Cartesia TTS utworzony pomyślnie dla głosu '{selected_voice_key}'.")
+        # Plugin Cartesia jest tworzony z rozpakowaną konfiguracją.
+        # Konstruktor cartesia.TTS oczekuje 'model', 'voice', 'speed', etc. jako argumenty kluczowe.
+        tts_plugin = cartesia.TTS(**selected_tts_config)
+        logger.debug(f"Job {job_id}: Plugin Cartesia TTS utworzony pomyślnie dla głosu '{tts_config_choice}'.")
     except Exception as e:
-        logger.error(f"Job {job_id}: Nie udało się utworzyć pluginu Cartesia TTS dla głosu '{selected_voice_key}': {e}", exc_info=True)
-        logger.error(f"Job {job_id}: Sprawdź, czy masz poprawny CARTESIA_API_KEY w zmiennych środowiskowych.")
+        logger.error(f"Job {job_id}: Krytyczny błąd podczas tworzenia pluginu Cartesia TTS: {e}")
+        logger.error(f"Job {job_id}: Użyta konfiguracja: {selected_tts_config}")
+        return # Zakończ, jeśli plugin TTS nie może być utworzony
+
+    # Inicjalizacja pozostałych pluginów (STT, LLM) - upewnij się, że masz odpowiednie klucze API
+    try:
+        # Przykładowe konfiguracje - dostosuj do swoich potrzeb
+        if not os.getenv("DEEPGRAM_API_KEY"): # Sprawdź czy klucz jest dostępny
+             logger.warning("DEEPGRAM_API_KEY nie jest ustawiony. Plugin Deepgram STT może nie działać.")
+        stt_plugin = deepgram.STT(model="nova-2", language="pl", interim_results=True, endpointing_ms=300)
+
+        if not os.getenv("OPENAI_API_KEY"): # Sprawdź czy klucz jest dostępny
+             logger.warning("OPENAI_API_KEY nie jest ustawiony. Plugin OpenAI LLM może nie działać.")
+        llm_plugin = openai.LLM(model="gpt-4o-mini") # Użyj modelu obsługującego język polski
+    except Exception as e:
+        logger.error(f"Job {job_id}: Błąd podczas inicjalizacji pluginu STT lub LLM: {e}")
         return
 
     try:
-        await ctx.connect()
-        logger.info(f"Job {job_id} pomyślnie połączony z pokojem {room_name_str}")
-    except Exception as e:
-        logger.error(f"Job {job_id} - Błąd podczas ctx.connect(): {e}", exc_info=True)
-        return
+        await ctx.connect() # Łączenie z pokojem LiveKit
+        logger.info(f"Job {job_id} pomyślnie połączony z pokojem {ctx.room.name}")
 
-    try:
-        session = AgentSession()
-        logger.debug(f"Job {job_id} - Obiekt AgentSession stworzony: {session}")
+        # Utworzenie instancji agenta z skonfigurowanymi pluginami
+        agent_instance = SimpleAgent(tts_plugin=tts_plugin, llm_plugin=llm_plugin, stt_plugin=stt_plugin)
 
-        agent_instance = SimpleAgent(tts_plugin=tts_plugin)
-
-        logger.info(f"Job {job_id} - Rozpoczynanie AgentSession z SimpleAgent (głos: {selected_voice_key})...")
-        await session.start(
-            agent=agent_instance,
-            room=ctx.room
+        # AgentSession zarządza pętlą STT->LLM->TTS.
+        # Przekazujemy do niej agenta oraz instancje pluginów.
+        session = AgentSession(
+            room=ctx.room,
+            agent=agent_instance, # Nasza instancja agenta
+            stt=stt_plugin,       # Skonfigurowany plugin STT
+            llm=llm_plugin,       # Skonfigurowany plugin LLM
+            tts=tts_plugin,       # Skonfigurowany plugin TTS
+            vad=silero.VAD.load(),# Przykładowy VAD, upewnij się, że masz modele Silero
+            # Możesz dodać inne opcje i pluginy tutaj, jeśli są potrzebne
         )
-        logger.info(f"Job {job_id} - AgentSession wystartowała pomyślnie dla pokoju {room_name_str} z głosem {selected_voice_key}")
+        
+        logger.debug(f"Job {job_id} - Obiekt AgentSession stworzony.")
+        
+        # Uruchomienie sesji agenta. To wywoła metodę `start` w `SimpleAgent`.
+        await session.start() 
+        logger.info(f"Job {job_id} - AgentSession wystartowała. Agent jest aktywny i nasłuchuje.")
 
     except Exception as e:
         logger.error(f"Job {job_id} - Krytyczny błąd podczas inicjalizacji lub startu AgentSession: {e}", exc_info=True)
     finally:
-        logger.info(f"Job {job_id} - Kończenie entrypoint. AgentSession (jeśli wystartowała) zakończy pracę, gdy pokój zostanie zamknięty lub agent się rozłączy.")
-
+        logger.info(f"Job {job_id} - Kończenie entrypoint. AgentSession (jeśli wystartowała) zarządza swoim cyklem życia.")
+        # AgentSession i JobContext powinny zarządzać cyklem życia połączenia.
 
 if __name__ == "__main__":
-    logger.info("Uruchamianie aplikacji CLI dla workera agenta...")
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    logger.info("Sprawdzanie konfiguracji LiveKit...")
+    if not os.getenv("LIVEKIT_API_KEY") or \
+       not os.getenv("LIVEKIT_API_SECRET") or \
+       not os.getenv("LIVEKIT_URL"):
+        logger.error("Zmienne środowiskowe LiveKit (LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL) nie są w pełni ustawione. Prerywam.")
+    else:
+        logger.info("Uruchamianie aplikacji CLI dla workera agenta...")
+        cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, job_type=JobType.JT_ROOM))
